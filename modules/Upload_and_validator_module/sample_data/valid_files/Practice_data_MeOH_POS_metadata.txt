@@ -1,0 +1,13 @@
+filename	ATTRIBUTE_Tissue
+Kgali_MeOH_pos_MCL_R1_1a.mzML	MCL
+Kgali_MeOH_pos_MCL_R1_2a.mzML	MCL
+Kgali_MeOH_pos_MCL_R2_1a.mzML	MCL
+Kgali_MeOH_pos_MCL_R2_2a.mzML	MCL
+Kgali_MeOH_pos_MCL_R3_1a.mzML	MCL
+Kgali_MeOH_pos_MCL_R3_2a.mzML	MCL
+Kgali_MeOH_pos_MCR_R1_1a.mzML	MCR
+Kgali_MeOH_pos_MCR_R1_2a.mzML	MCR
+Kgali_MeOH_pos_MCR_R2_1a.mzML	MCR
+Kgali_MeOH_pos_MCR_R2_2a.mzML	MCR
+Kgali_MeOH_pos_MCR_R3_1a.mzML	MCR
+Kgali_MeOH_pos_MCR_R3_2a.mzML	MCR

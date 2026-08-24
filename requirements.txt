@@ -1,0 +1,4 @@
+pandas>=1.5
+
+# testing (optional, only needed to run tests/)
+pytest>=7.0

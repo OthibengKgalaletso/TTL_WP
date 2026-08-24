@@ -1,0 +1,3 @@
+feature_id,sample_A.mzML,sample_B.mzML
+FT0001,1000,not_a_number
+FT0002,300,250
