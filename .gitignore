@@ -7,3 +7,6 @@ venv/
 *.egg-info/
 .idea/
 .vscode/
+
+# generated visualization output (rebuilt by run_check.sh)
+viz_output/
