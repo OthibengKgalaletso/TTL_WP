@@ -29,6 +29,7 @@ pytest tests/test_validator.py::test_name -v   # single test
 
 cd modules/visualization
 ./run_check.sh path/to/folder [ATTRIBUTE_col] [none|sum|median] [none|pareto|auto]
+# --venn-min-fraction is only on the Python CLI (visualization_module.py), not run_check.sh
 pytest -v
 ```
 
@@ -64,36 +65,42 @@ Severity works as follows:
 **`modules/Upload_and_validator_module/SPEC.md` is the source of truth for this module's behaviour.** It lists every rule with a stable ID (`VAL-xx-nn`) and its severity, the API/JSON/exit-code contract, the mapping from tests to requirements, and the known limitations. Before changing validator behaviour, follow its §9 change-control steps: spec, then tests, then code, then docs, then verify, with a semver bump and a changelog entry. Also keep the docstring at the top of `metabolomics_validator.py` in sync with SPEC §5.
 
 ### Visualization module
+**`modules/visualization/SPEC.md` is the source of truth for this module's behaviour** (rule IDs `VIZ-xx-nn`). Follow its §9 change control, the same as the validator, and keep `__version__` in `visualization_module.py` in step with the spec version.
+
 `VisualizationModule(VisualizationInputs).run()` calls its stages in a fixed order:
 1. feature summary
 2. chromatograms
 3. normalization summary
 4. distribution shape
-5. PCA and correlation
+5. PCA (2D, plus 3D when there are ≥4 samples) and correlation
 6. PLS-DA
 7. OPLS-DA
 8. volcano plot
+9. feature overlap (Venn for 2–3 groups, UpSet-style chart for 4+)
 
 Each stage saves PNGs and adds a text section to the report. `build_report()` then writes everything to `analysis_report.txt` in `output_dir`. Matplotlib uses the headless `Agg` backend.
 
 Key data-handling rules. They're deliberate, so don't "fix" them:
 - **Raw data stays raw for QC.** The feature summary and chromatograms use unmodified values.
 - **Normalization is per sample** (`sum`/`median`/`none`, default `sum`). It applies to every cross-sample analysis.
-- **Scaling is per feature** (`pareto`/`auto`/`none`, default `pareto`). It applies **only** to PCA, correlation, PLS-DA and OPLS-DA, **not** to the volcano plot, so fold changes stay real intensity ratios.
+- **Scaling is per feature** (`pareto`/`auto`/`none`, default `pareto`). It applies **only** to PCA, PLS-DA and OPLS-DA. It is **not** applied to the volcano plot, so fold changes stay real intensity ratios, or to the correlation matrix, which is Pearson on log1p of normalized, unscaled values.
 - **Missing values.** NA is treated as 0 for PCA, correlation, PLS-DA and OPLS-DA. The volcano plot instead skips NAs (`nanmean`, `nan_policy="omit"`).
-- **Group requirements.** OPLS-DA and the volcano plot need exactly 2 groups. Every supervised analysis needs at least 2 matched samples per group. If these conditions aren't met, the analysis is skipped with a note in the report rather than raising an error.
+- **Group requirements.** OPLS-DA and the volcano plot need exactly 2 groups. Every supervised analysis needs at least 2 matched samples per group. Feature overlap needs ≥2 groups but only 1 sample per group. If these conditions aren't met, the analysis is skipped with a note in the report rather than raising an error.
 - **Grouping column resolution:**
-  - `--group-column` or `VisualizationInputs.group_column`, if set, wins.
+  - `--group-column` or `VisualizationInputs.group_column`, if set, wins (any metadata column is accepted).
   - Otherwise, a single `ATTRIBUTE_*` column is used automatically.
   - With several candidates, an interactive run (TTY) asks you to pick one. A non-interactive run skips the supervised analyses. Nothing should ever block waiting for input when there's no TTY.
   - The prompt is a stand-in for a future GUI picker.
+  - PCA colouring and the feature-summary group counts use the same resolved column, falling back to a looser `Class`/`Group`/`Condition`/`*attribute*` match only when nothing resolves.
+- **Group colours** come from one tab10 map in sorted group order (`_group_color_map`), so a group has the same colour in every plot. The volcano plot colours significant features by the group they're higher in.
+- **Feature overlap.** A feature is "captured" by a group when it's detected (> 0, not NA, raw values) in ≥ `venn_min_fraction` (default 0.5) of that group's samples. The Venn layout is fixed, not area-proportional. Membership goes to `feature_overlap.csv`.
 - **Data matrix shape.** It accepts either a bare `feature_id, sample...` matrix or the MZmine shape `row ID, row m/z, row retention time, samples...`. The m/z and RT columns are excluded from the per-sample statistics.
-- **Chromatograms.** TIC/BPC use MS1 scans only. They prefer the precomputed cvParams `MS:1000285` and `MS:1000505`, and fall back to decoding the binary arrays (32- or 64-bit, zlib-compressed or not).
+- **Chromatograms.** TIC/BPC use MS1 scans only. They prefer the precomputed cvParams `MS:1000285` and `MS:1000505`, and fall back to decoding the binary arrays (32- or 64-bit, zlib-compressed or not) when either is missing. RT is reported in seconds; minute-valued scan start times are converted.
 - **Statistics:**
   - PLS-DA: `PLSRegression` on one-hot group labels.
   - OPLS-DA: one orthogonal component (Trygg & Wold 2002).
   - Volcano plot: Welch's t-test, Benjamini-Hochberg q-values, and a default significance overlay of p < 0.05 and |log2FC| > 1.
-- **Deferred:** an interactive MS1/MS2 spectra viewer, planned for the GUI phase.
+- **Deferred:** an interactive MS1/MS2 spectra viewer, and interactive versions of the Venn/UpSet and 3D PCA plots (static PNGs for now), all planned for the GUI phase.
 
 ## Sample data
 
