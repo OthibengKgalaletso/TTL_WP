@@ -17,22 +17,25 @@ Required inputs (marked * in the diagram):
     - mzML files        (one or more .mzML raw/processed spectra files)
     - Sample metadata   (.csv/.tsv/.txt table describing each sample)
     - Data matrix       (feature x sample intensity table)
+    - Full feature table (MZmine 3/4 "Export to CSV file (modular)", .csv)
 
 Optional inputs:
-    - Feature table       (e.g. MZmine/XCMS quantification export)
-    - MGF file             (.mgf, MS/MS spectra for annotation)
+    - MGF file             (.mgf, MZmine export of MS/MS spectra)
     - Annotation list      (feature ID -> putative compound ID)
+
+The feature table and MGF are accepted ONLY as MZmine 3/4 output; the
+feature table must be the full feature list, not MZmine's reduced
+GNPS/IIMN quant export (see SPEC.md VAL-EX-01).
 
 Format specs enforced by "Validate file integrity & format":
 
-    MGF file
+    MGF file (MZmine export)
       - Every spectrum wrapped in BEGIN IONS / END IONS.
-      - Required header tags per block: PEPMASS=, an identifier (TITLE=,
-        or FEATURE_ID=/SCANS= as used by MZmine/GNPS exports), and
-        RTINSECONDS= (or RT=). CHARGE= is validated for format (bare
-        digit or with a '+'/'-' sign, e.g. 1 or 1+) when present, but not
-        required — real exporters (e.g. MZmine) omit it for single-scan,
-        non-merged features where charge can't be determined.
+      - Required header tags per block (MZmine fingerprint): PEPMASS=,
+        FEATURE_ID= (integer), MSLEVEL= and RTINSECONDS=. CHARGE= is
+        validated for format (bare digit or with a '+'/'-' sign, e.g. 1
+        or 1+) when present, but not required — MZmine omits it for
+        single-scan, non-merged features where charge can't be determined.
       - Body: numeric "[m/z] [intensity]" pairs, space- or tab-separated;
         scientific notation and an extra trailing column are tolerated.
 
@@ -56,10 +59,17 @@ Format specs enforced by "Validate file integrity & format":
       - Peak values must be numeric or blank; non-numeric strings are an
         error, blank/NA cells (non-detected features) are a warning.
 
-    Feature quantification table (MZmine / XCMS style export)
-      - Required columns: row ID (or feature_id), row m/z (or m/z),
-        row retention time (or rt), and per-sample peak area/height
-        columns.
+    Full feature table (MZmine 3/4 "Export to CSV file (modular)")
+      - A GNPS/IIMN quant or legacy MZmine 2 export (row ID + "<file>
+        Peak area" columns) is rejected with a re-export message.
+      - Required row-level columns: id, mz, rt, rt_range:min,
+        rt_range:max, mz_range:min, mz_range:max, height, area.
+      - Per-sample columns datafile:<file>:area and datafile:<file>:height,
+        both present for every sample.
+      - id values unique integers; mz/rt numeric; area/height numeric or
+        blank (non-detected).
+      - Samples must match the metadata filenames; every MGF FEATURE_ID
+        must exist in the id column.
 
     Metabolite annotation list
       - Required columns: feature_id (or Scan, Query_ID, id — MZmine's
@@ -72,7 +82,7 @@ Usage:
         --mzml sample1.mzML sample2.mzML \
         --metadata sample_metadata.csv \
         --data-matrix data_matrix.csv \
-        [--feature-table feature_table.csv] \
+        --feature-table mzmine_full_feature_table.csv \
         [--mgf spectra.mgf] \
         [--annotation-list annotations.csv] \
         [--report-format text|json] [--report-out report.txt]
@@ -148,7 +158,7 @@ EXPECTED_EXTENSIONS = {
     "mzML files": {".mzml"},
     "Sample metadata": {".csv", ".tsv", ".txt"},
     "Data matrix": {".csv", ".tsv", ".txt", ".xlsx", ".xls"},
-    "Feature table": {".csv", ".tsv", ".txt", ".xlsx", ".xls"},
+    "Feature table": {".csv"},  # MZmine's CSV export only writes .csv
     "MGF file": {".mgf"},
     "Annotation list": {".csv", ".tsv", ".txt", ".xlsx", ".xls"},
 }
@@ -192,6 +202,24 @@ def _find_cols_containing(df: pd.DataFrame, substrings: list[str]) -> list[str]:
     return [col for col in df.columns if any(s in _norm(col) for s in subs)]
 
 
+def _mzmine_datafile_cols(df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    """Map sample -> {field: column} for MZmine 3/4 'datafile:<file>:<field>' headers.
+
+    Matched on the raw header since _norm would strip the colons. Fields can
+    be nested (e.g. 'datafile:A.mzML:rt_range:min'), so the sample is the
+    first segment and the field is everything after it.
+    """
+    samples: dict[str, dict[str, str]] = {}
+    for col in df.columns:
+        name = str(col).strip()
+        if not name.lower().startswith("datafile:"):
+            continue
+        sample, sep, fld = name[len("datafile:"):].partition(":")
+        if sep and sample:
+            samples.setdefault(sample, {})[fld.lower()] = col
+    return samples
+
+
 def _filename_variants(name: str) -> set[str]:
     """Casefolded filename and its extension-stripped stem, for loose filename matching."""
     name = str(name).strip()
@@ -220,7 +248,7 @@ class MetabolomicsValidator:
         self._matrix_sample_cols: list[str] = []
         self._feature_table_df: Optional[pd.DataFrame] = None
         self._feature_table_id_col: Optional[str] = None
-        self._feature_table_sample_cols: list[str] = []
+        self._feature_table_sample_cols: list[str] = []  # sample names from datafile:<file>:...
         self._annotation_df: Optional[pd.DataFrame] = None
         self._annotation_id_col: Optional[str] = None
         self._mgf_titles: list[str] = []
@@ -263,6 +291,12 @@ class MetabolomicsValidator:
             ok = False
         if not self.inputs.data_matrix_file:
             self._add(Step.UPLOAD, Severity.ERROR, "Data matrix", "No data matrix file was supplied (required).")
+            ok = False
+        if not self.inputs.feature_table_file:
+            self._add(
+                Step.UPLOAD, Severity.ERROR, "Feature table",
+                "No full feature table was supplied (required; MZmine 'Export to CSV file (modular)').",
+            )
             ok = False
 
         all_paths = list(self.inputs.mzml_files)
@@ -556,37 +590,68 @@ class MetabolomicsValidator:
         self._matrix_sample_cols = [c for c in sample_cols if c not in descriptive_cols]
         return True
 
-    # Feature quantification table (MZmine / XCMS style export).
+    # Full feature table (MZmine 3/4 "Export to CSV file (modular)").
     def _check_feature_table(self) -> bool:
         path = self.inputs.feature_table_file
-        if not path or not os.path.isfile(path):
-            return True  # optional and absent
+        if not path or not os.path.isfile(path) or Path(path).suffix.lower() != ".csv":
+            return True  # missing / wrong type already flagged upstream
         df = self._read_table(path)
         if df is None:
-            self._add(Step.INTEGRITY, Severity.ERROR, path, "Could not parse file as a table (csv/tsv/txt/xlsx).")
+            self._add(Step.INTEGRITY, Severity.ERROR, path, "Could not parse file as a table (csv).")
+            return False
+
+        # MZmine's reduced GNPS/IIMN quant export (and the legacy MZmine 2
+        # CSV) use "row ID" + "<file> Peak area" columns. Those are a common
+        # wrong upload, so say exactly what to re-export instead of listing
+        # every missing full-table column.
+        if _find_col(df, ["row ID"]) and _find_cols_containing(df, ["peak area", "peak height"]):
+            self._add(
+                Step.INTEGRITY, Severity.ERROR, path,
+                "This looks like MZmine's GNPS/IIMN quant table (or a legacy MZmine 2 export), "
+                "not the full feature table. Re-export the feature list from MZmine 3/4 with "
+                "'Export to CSV file (modular)'.",
+            )
             return False
 
         ok = True
-        id_col = _find_col(df, ["row ID", "feature_id"])
-        if id_col is None:
-            self._add(Step.INTEGRITY, Severity.ERROR, path, "Required column not found (expected 'row ID' or 'feature_id').")
-            ok = False
+        headers = {str(c).strip().lower(): c for c in df.columns}
+        id_col = headers.get("id")
+        mz_col = headers.get("mz")
+        rt_col = headers.get("rt")
+        for name, col in (("id", id_col), ("mz", mz_col), ("rt", rt_col)):
+            if col is None:
+                self._add(
+                    Step.INTEGRITY, Severity.ERROR, path,
+                    f"Required MZmine column '{name}' not found.",
+                )
+                ok = False
 
-        mz_col = _find_col(df, ["row m/z", "m/z", "mz"])
-        if mz_col is None:
-            self._add(Step.INTEGRITY, Severity.ERROR, path, "Required column not found (expected 'row m/z' or 'm/z').")
-            ok = False
-
-        rt_col = _find_col(df, ["row retention time", "retention time", "rt"])
-        if rt_col is None:
-            self._add(Step.INTEGRITY, Severity.ERROR, path, "Required column not found (expected 'row retention time' or 'rt').")
-            ok = False
-
-        sample_cols = _find_cols_containing(df, ["peak area", "peak height"])
-        if not sample_cols:
+        samples = _mzmine_datafile_cols(df)
+        quant_samples = {s: f for s, f in samples.items() if "area" in f or "height" in f}
+        if not quant_samples:
             self._add(
                 Step.INTEGRITY, Severity.ERROR, path,
-                "No per-sample 'Peak area'/'Peak height' columns found.",
+                "No per-sample 'datafile:<file>:area' / 'datafile:<file>:height' columns found.",
+            )
+            ok = False
+
+        # Row-level fields that MZmine's full export writes but its reduced
+        # exports don't — confirms this is really the full feature table.
+        full_fields = ["rt_range:min", "rt_range:max", "mz_range:min", "mz_range:max", "height", "area"]
+        missing_fields = [f for f in full_fields if f not in headers]
+        if missing_fields:
+            self._add(
+                Step.INTEGRITY, Severity.ERROR, path,
+                f"Not a full MZmine feature table: missing row-level column(s) {missing_fields}. "
+                "Re-export with 'Export to CSV file (modular)' and keep all row types selected.",
+            )
+            ok = False
+
+        incomplete = sorted(s for s, f in samples.items() if not {"area", "height"} <= f.keys())
+        if incomplete:
+            self._add(
+                Step.INTEGRITY, Severity.ERROR, path,
+                f"{len(incomplete)} sample(s) lack both a ':area' and a ':height' column: {incomplete}",
             )
             ok = False
 
@@ -597,9 +662,41 @@ class MetabolomicsValidator:
             self._add(Step.INTEGRITY, Severity.ERROR, path, f"Duplicate values in '{id_col}' column.")
             return False
 
+        ids = df[id_col].astype(str).str.strip()
+        bad_ids = df.index[df[id_col].isna() | ~ids.str.fullmatch(r"\d+")].tolist()
+        if bad_ids:
+            examples = [f"row {r + 2} = {df[id_col].iat[r]!r}" for r in bad_ids[:5]]
+            self._add(
+                Step.INTEGRITY, Severity.ERROR, path,
+                f"{len(bad_ids)} '{id_col}' value(s) are blank or not integers; e.g. {'; '.join(examples)}.",
+            )
+            ok = False
+
+        # mz/rt must be present and numeric; area/height may be blank (non-detected).
+        quant_cols = [c for f in quant_samples.values() for k, c in f.items() if k in ("area", "height")]
+        for cols, allow_blank in (([mz_col, rt_col], False), (quant_cols, True)):
+            numeric_part = df[cols].apply(pd.to_numeric, errors="coerce")
+            bad_cells = numeric_part.isna() if not allow_blank else numeric_part.isna() & ~df[cols].isna()
+            bad_count = int(bad_cells.to_numpy().sum())
+            if bad_count > 0:
+                rows, cidx = bad_cells.to_numpy().nonzero()
+                examples = [
+                    f"row {r + 2}, column '{cols[c]}' = {df[cols].iat[r, c]!r}"
+                    for r, c in list(zip(rows, cidx))[:5]
+                ]
+                kind = "numeric or blank" if allow_blank else "numeric and non-blank"
+                self._add(
+                    Step.INTEGRITY, Severity.ERROR, path,
+                    f"{bad_count} value(s) must be {kind}; e.g. {'; '.join(examples)}.",
+                )
+                ok = False
+
+        if not ok:
+            return False
+
         self._feature_table_df = df
         self._feature_table_id_col = id_col
-        self._feature_table_sample_cols = sample_cols
+        self._feature_table_sample_cols = sorted(quant_samples)
         return True
 
     # MGF: BEGIN/END IONS blocks, required header tags, numeric peak pairs.
@@ -611,12 +708,11 @@ class MetabolomicsValidator:
         # CHARGE isn't always determinable — e.g. MZmine leaves it out for
         # single-scan, non-merged features — so it's format-checked when
         # present but not required outright.
-        required_tags = {"PEPMASS"}
-        rt_tags = {"RTINSECONDS", "RT"}
-        # A spectrum block needs *some* identifier — TITLE is the spec name,
-        # but real-world exports (e.g. MZmine/GNPS) commonly use FEATURE_ID
-        # or SCANS instead, so any one of these satisfies the requirement.
-        id_tags = {"TITLE", "FEATURE_ID", "SCANS"}
+        # Only MZmine MGF exports are accepted: every block carries an
+        # integer FEATURE_ID (linking it to the feature table's id),
+        # MSLEVEL and RTINSECONDS. TITLE/SCANS may appear but don't count.
+        required_tags = {"PEPMASS", "MSLEVEL"}
+        feature_id_re = re.compile(r"^\d+$")
         # Numeric pairs, allowing scientific notation (e.g. 1.23e+05) and an
         # optional trailing 3rd column (some exporters add a charge/flag
         # column per peak) — only the first two tokens (m/z, intensity) are
@@ -656,15 +752,17 @@ class MetabolomicsValidator:
                         end_count += 1
                         in_block = False
                         missing = sorted(required_tags - tags_seen)
-                        if not (rt_tags & tags_seen):
-                            missing.append("RTINSECONDS (or RT)")
-                        if not (id_tags & tags_seen):
-                            missing.append("TITLE (or FEATURE_ID / SCANS)")
+                        if "RTINSECONDS" not in tags_seen:
+                            missing.append("RTINSECONDS")
+                        if "FEATURE_ID" not in tags_seen:
+                            missing.append("FEATURE_ID")
+                        elif not feature_id_re.match(title_val or ""):
+                            missing.append(f"FEATURE_ID value '{title_val}' not an integer")
                         if missing:
                             bad_blocks.append((block_index, missing))
                         if charge_val is not None and not charge_re.match(charge_val):
                             bad_blocks.append((block_index, [f"CHARGE value '{charge_val}' not numeric (with optional '+'/'-')"]))
-                        if title_val:
+                        if title_val and feature_id_re.match(title_val):
                             titles.append(title_val)
                         continue
                     if not in_block or not stripped:
@@ -679,7 +777,7 @@ class MetabolomicsValidator:
                         tags_seen.add(key)
                         if key == "CHARGE":
                             charge_val = val.strip()
-                        if key in id_tags and not title_val:
+                        if key == "FEATURE_ID" and title_val is None:
                             title_val = val.strip()
                     else:
                         peak_lines_total += 1
@@ -846,6 +944,46 @@ class MetabolomicsValidator:
                 )
                 ok = False
 
+        # metadata['filename'] <-> feature table datafile:<file> samples
+        if metadata_variants and self._feature_table_sample_cols:
+            ft_variants = [(c, _filename_variants(c)) for c in self._feature_table_sample_cols]
+
+            missing_in_ft = [
+                name for name, mv in metadata_variants
+                if not any(mv & fv for _, fv in ft_variants)
+            ]
+            if missing_in_ft:
+                self._add(
+                    Step.COMPATIBILITY, Severity.ERROR, "Feature table",
+                    f"{len(missing_in_ft)} sample(s) in metadata have no matching "
+                    f"'datafile:<file>' columns in the feature table: {missing_in_ft}",
+                )
+                ok = False
+
+            extra_in_ft = [
+                name for name, fv in ft_variants
+                if not any(fv & mv for _, mv in metadata_variants)
+            ]
+            if extra_in_ft:
+                self._add(
+                    Step.COMPATIBILITY, Severity.WARNING, "Feature table",
+                    f"{len(extra_in_ft)} feature-table sample(s) don't match any metadata "
+                    f"filename: {extra_in_ft}",
+                )
+
+        # MGF <-> feature table: both must come from the same MZmine feature list.
+        if self._mgf_titles and self._feature_table_df is not None:
+            ft_ids = set(self._feature_table_df[self._feature_table_id_col].astype(str).str.strip())
+            unmatched = set(self._mgf_titles) - ft_ids
+            if unmatched:
+                self._add(
+                    Step.COMPATIBILITY, Severity.ERROR, "MGF file",
+                    f"{len(unmatched)} MGF FEATURE_ID(s) not found in the feature table 'id' column "
+                    f"(were they exported from the same MZmine feature list?): "
+                    f"{sorted(unmatched, key=int)[:10]}{'...' if len(unmatched) > 10 else ''}",
+                )
+                ok = False
+
         # feature table <-> data matrix: feature IDs should line up.
         if self._feature_table_df is not None and self._matrix_df is not None:
             ft_ids = set(self._feature_table_df[self._feature_table_id_col].astype(str))
@@ -959,15 +1097,15 @@ class ValidationReport:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate a metabolomics dataset (mzML + metadata + data matrix, "
-                    "plus optional feature table / MGF / annotation list) before it "
+        description="Validate a metabolomics dataset (mzML + metadata + data matrix + "
+                    "MZmine full feature table, plus optional MZmine MGF / annotation list) before it "
                     "enters downstream processing.",
     )
     parser.add_argument("--mzml", nargs="+", metavar="FILE", help="One or more .mzML files (required).")
     parser.add_argument("--metadata", metavar="FILE", help="Sample metadata table (required).")
     parser.add_argument("--data-matrix", metavar="FILE", help="Feature x sample intensity matrix (required).")
-    parser.add_argument("--feature-table", metavar="FILE", help="Feature quantification table (optional).")
-    parser.add_argument("--mgf", metavar="FILE", help="MGF file of MS/MS spectra (optional).")
+    parser.add_argument("--feature-table", metavar="FILE", help="MZmine 3/4 full feature table CSV (required).")
+    parser.add_argument("--mgf", metavar="FILE", help="MZmine MGF export of MS/MS spectra (optional).")
     parser.add_argument("--annotation-list", metavar="FILE", help="Metabolite annotation list (optional).")
     parser.add_argument("--report-format", choices=["text", "json"], default="text", help="Report output format.")
     parser.add_argument("--report-out", metavar="FILE", help="Write the report to this file (also prints to stdout).")
@@ -978,8 +1116,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    if not (args.mzml or args.metadata or args.data_matrix):
-        parser.error("Provide --mzml/--metadata/--data-matrix.")
+    if not (args.mzml or args.metadata or args.data_matrix or args.feature_table):
+        parser.error("Provide --mzml/--metadata/--data-matrix/--feature-table.")
 
     inputs = InputSet(
         mzml_files=args.mzml or [],

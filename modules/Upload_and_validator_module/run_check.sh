@@ -11,9 +11,10 @@ cd "$(dirname "$0")"
 DATA_DIR="${1:-sample_data/valid_files}"
 MZML_FILES=("$DATA_DIR"/*.mzML)
 
-ARGS=(--mzml "${MZML_FILES[@]}" --metadata "$DATA_DIR/Practice_data_MeOH_POS_metadata.csv" --data-matrix "$DATA_DIR/DataMatrix_Example.csv")
+# The feature table is required and must be MZmine 3/4's full "Export to CSV
+# file (modular)" output — not the GNPS/IIMN quant table.
+ARGS=(--mzml "${MZML_FILES[@]}" --metadata "$DATA_DIR/Practice_data_MeOH_POS_metadata.csv" --data-matrix "$DATA_DIR/DataMatrix_Example.csv" --feature-table "$DATA_DIR/Practice_data_MeOH_POS_full_feature_table.csv")
 
-[ -f "$DATA_DIR/Practice_data_MeOH_POS_iimn_gnps_quant.csv" ] && ARGS+=(--feature-table "$DATA_DIR/Practice_data_MeOH_POS_iimn_gnps_quant.csv")
 [ -f "$DATA_DIR/Practice_data_MeOH_POS_iimn_gnps.mgf" ] && ARGS+=(--mgf "$DATA_DIR/Practice_data_MeOH_POS_iimn_gnps.mgf")
 [ -f "$DATA_DIR/Practice_data_MeOH_POS_annotations.csv" ] && ARGS+=(--annotation-list "$DATA_DIR/Practice_data_MeOH_POS_annotations.csv")
 
