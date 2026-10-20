@@ -2,8 +2,8 @@
 
 Part of the [TTL_pipeline](../../README.md) project. A standalone Python
 script that validates a metabolomics dataset — mzML spectra, sample
-metadata, and a data matrix (required), plus an optional feature
-quantification table, MGF file, and metabolite annotation list — before it
+metadata, a data matrix and the full MZmine feature table (required), plus
+an optional MZmine MGF file and metabolite annotation list — before it
 enters downstream processing. It mirrors a four-step pipeline:
 
 ```
@@ -44,8 +44,8 @@ python metabolomics_validator.py \
   --mzml sample_data/valid/sample_A.mzML sample_data/valid/sample_B.mzML \
   --metadata sample_data/valid/sample_metadata.csv \
   --data-matrix sample_data/valid/data_matrix.csv \
-  --feature-table sample_data/valid/feature_table.csv \
-  --mgf sample_data/valid/spectra.mgf \
+  --feature-table sample_data/valid/mzmine_full_feature_table.csv \
+  --mgf sample_data/valid/mzmine_spectra.mgf \
   --annotation-list sample_data/valid/annotation_list.csv
 ```
 
@@ -56,12 +56,32 @@ of the files from `sample_data/invalid/`, e.g.:
 python metabolomics_validator.py \
   --mzml sample_data/valid/sample_A.mzML sample_data/valid/sample_B.mzML \
   --metadata sample_data/invalid/sample_metadata_missing_class.csv \
-  --data-matrix sample_data/valid/data_matrix.csv
+  --data-matrix sample_data/valid/data_matrix.csv \
+  --feature-table sample_data/valid/mzmine_full_feature_table.csv
 ```
 
-Only mzML files, sample metadata, and the data matrix are required; the
-feature table, MGF file, and annotation list are optional and are only
+mzML files, sample metadata, the data matrix and the full feature table are
+required; the MGF file and annotation list are optional and are only
 validated when supplied.
+
+### MZmine-only feature table and MGF
+
+The feature table and MGF are accepted **only** as MZmine 3/4 output:
+
+- **Feature table** — must be the *full* feature list, exported from MZmine
+  with *Feature list → Export → Export to CSV file (modular)*, keeping all
+  row types selected (`.csv` only). It must contain `id`, `mz`, `rt`,
+  `rt_range:min/max`, `mz_range:min/max`, `height`, `area`, and
+  `datafile:<file>:area` + `datafile:<file>:height` for every sample.
+  MZmine's reduced *GNPS/IIMN quant table* (`row ID`, `row m/z`,
+  `<file> Peak area`) is rejected with a re-export message.
+- **MGF** — every block needs `FEATURE_ID` (integer), `MSLEVEL`,
+  `RTINSECONDS` and `PEPMASS`, and every `FEATURE_ID` must exist in the
+  feature table's `id` column (i.e. both exported from the same feature list).
+
+`./run_check.sh` expects the full export at
+`sample_data/valid_files/Practice_data_MeOH_POS_full_feature_table.csv`.
+See `SPEC.md` (VAL-EX-01, VAL-FQ-*, VAL-MG-*, VAL-CP-08/09) for the exact rules.
 
 ## Running the tests
 
